@@ -1,5 +1,5 @@
 
-export type VerificationStatus = 'verified' | 'hallucination' | 'unverifiable' | 'checking';
+export type VerificationStatus = 'verified' | 'hallucination' | 'unverifiable' | 'doubtful' | 'checking';
 
 export interface FactualClaim {
   id: string;

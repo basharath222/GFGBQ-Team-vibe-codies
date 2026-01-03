@@ -4,18 +4,20 @@ import { FactualClaim, VerificationResult, VerificationStatus } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
-const CLAIM_EXTRACTION_MODEL = 'gemini-3-pro-preview';
+const ANALYSIS_MODEL = 'gemini-3-pro-preview';
 
 /**
- * Extracts factual claims from raw text.
+ * Extracts atomic, verifiable factual claims from raw text.
  */
 export async function extractClaims(text: string): Promise<FactualClaim[]> {
   const response = await ai.models.generateContent({
-    model: CLAIM_EXTRACTION_MODEL,
-    contents: `Identify every specific factual assertion in the following text. 
+    model: ANALYSIS_MODEL,
+    contents: `Act as VeriSynth AI. Identify every atomic, verifiable factual assertion (names, dates, statistics, event descriptions) in the following text. 
+    Ignore opinions or subjective statements.
+    
     For each assertion, extract:
     1. The exact substring from the text (originalText).
-    2. The core factual claim made (claim).
+    2. The core factual claim (claim).
     
     Return the data as a JSON array.
     
@@ -52,21 +54,29 @@ export async function extractClaims(text: string): Promise<FactualClaim[]> {
 }
 
 /**
- * Verifies a single claim using Google Search grounding.
+ * Verifies a claim using Zero-Shot Real-Time Grounding (Jan 2026).
  */
 export async function verifyClaim(claim: FactualClaim): Promise<FactualClaim> {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Verify the following factual claim using web search: "${claim.claim}"
-      
-      Determine if it is:
-      1. Verified (Highly accurate according to reliable sources)
-      2. Hallucination (Explicitly contradicted or completely unsubstantiated)
-      3. Unverifiable (Insufficient evidence or broken links mentioned)
-      
-      Provide a brief evidence summary and a list of source URLs.`,
+      model: ANALYSIS_MODEL,
+      contents: `Verify this claim: "${claim.claim}"`,
       config: {
+        systemInstruction: `Act as VeriSynth AI Hallucination Detection Engine.
+        Current Time: January 2026.
+        
+        VERIFICATION PROTOCOL:
+        1. REAL-TIME SEARCH: Use live web data. Prioritize official news (AP, BBC, Reuters, Hindu), gov databases, and peer-reviewed journals.
+        2. TRIANGULATION:
+           - VERIFIED (Green): Confirmed by at least TWO independent, reputable sources.
+           - DOUBTFUL (Orange): Found in only ONE reputable source.
+           - UNVERIFIABLE (Orange): Search results as of Jan 2026 do not confirm this (no data found).
+           - HALLUCINATION/FAKE (Red): Explicitly contradicted by reliable sources OR zero substantiation for high-impact claims (like accidents).
+        3. SELF-CORRECTION: If social media rumors (e.g. accidents) are not confirmed by official reports of safety, flag as High-Confidence Hallucination.
+        
+        RESPONSE FORMAT:
+        You MUST include a "status" field in your response text chosen from: "verified", "doubtful", "unverifiable", or "hallucination".
+        Provide the evidence snippet and list of sources used.`,
         tools: [{ googleSearch: {} }],
       },
     });
@@ -77,53 +87,51 @@ export async function verifyClaim(claim: FactualClaim): Promise<FactualClaim> {
       .map((chunk: any) => chunk.web?.uri)
       .filter((uri: string | undefined): uri is string => !!uri);
 
-    // Heuristic for status determination based on model text
     let status: VerificationStatus = 'unverifiable';
     const lowerText = text.toLowerCase();
-    if (lowerText.includes('verified') || lowerText.includes('accurate') || lowerText.includes('correct')) {
-      status = 'verified';
-    } else if (lowerText.includes('hallucination') || lowerText.includes('false') || lowerText.includes('incorrect') || lowerText.includes('misleading')) {
-      status = 'hallucination';
-    }
+    
+    // Explicit status mapping based on instruction adherence
+    if (lowerText.includes('verified')) status = 'verified';
+    else if (lowerText.includes('hallucination') || lowerText.includes('fake')) status = 'hallucination';
+    else if (lowerText.includes('doubtful')) status = 'doubtful';
+    else if (lowerText.includes('unverifiable')) status = 'unverifiable';
 
     return {
       ...claim,
       status,
       evidence: text,
-      sources,
+      sources: Array.from(new Set(sources)),
     };
   } catch (error) {
-    console.error("Verification failed for claim:", claim.claim, error);
+    console.error("Verification error:", error);
     return {
       ...claim,
       status: 'unverifiable',
-      explanation: 'Search verification failed due to network or API constraints.',
+      explanation: 'System timeout or grounding error.',
     };
   }
 }
 
-/**
- * Full analysis pipeline.
- */
 export async function analyzeText(text: string): Promise<VerificationResult> {
-  if (!text.trim()) {
-    throw new Error("Input text is empty");
-  }
-
-  // Phase 1: Extraction
   const claims = await extractClaims(text);
-  
-  // Phase 2: Concurrent Verification
   const verifiedClaims = await Promise.all(claims.map(verifyClaim));
 
-  // Phase 3: Aggregation
   const verifiedCount = verifiedClaims.filter(c => c.status === 'verified').length;
   const totalClaims = verifiedClaims.length;
-  const trustScore = totalClaims > 0 ? Math.round((verifiedCount / totalClaims) * 100) : 100;
+  
+  // Calculate trust score strictly
+  // Verified = 100%, Doubtful/Unverifiable = 20%, Hallucination = 0%
+  let totalPoints = 0;
+  verifiedClaims.forEach(c => {
+    if (c.status === 'verified') totalPoints += 100;
+    else if (c.status === 'doubtful' || c.status === 'unverifiable') totalPoints += 20;
+  });
+  
+  const trustScore = totalClaims > 0 ? Math.round(totalPoints / totalClaims) : 100;
 
   const summaryResponse = await ai.models.generateContent({
-    model: CLAIM_EXTRACTION_MODEL,
-    contents: `Provide a high-level summary of the reliability of this text based on these verification results:
+    model: ANALYSIS_MODEL,
+    contents: `As VeriSynth AI (Jan 2026), provide a structured summary of this text's reliability:
     ${JSON.stringify(verifiedClaims.map(c => ({ claim: c.claim, status: c.status })))}`,
   });
 
