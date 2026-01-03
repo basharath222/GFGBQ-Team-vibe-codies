@@ -1,0 +1,5 @@
+{
+  "name": "VeriSynth AI",
+  "description": "A sophisticated AI-driven fact-checking and citation verification engine designed to detect hallucinations and validate factual claims in real-time.",
+  "requestFramePermissions": []
+}
